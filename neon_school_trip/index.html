@@ -290,6 +290,7 @@ function render(t) {
 }
 
 window.ready = (async () => {
+  await Promise.all(['Jua', 'Monoton'].map(f => document.fonts.load(`100px ${f}`, '수학여행 ABC 0123')));
   await document.fonts.ready;
   WALL = makeWall();
   light = document.createElement('canvas'); light.width = W / 4; light.height = H / 4; lctx = light.getContext('2d');
