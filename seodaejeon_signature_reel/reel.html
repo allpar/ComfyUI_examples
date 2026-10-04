@@ -1,0 +1,572 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:Pre;font-weight:100;src:url(fonts/Pretendard-Thin.otf)}
+@font-face{font-family:Pre;font-weight:300;src:url(fonts/Pretendard-Light.otf)}
+@font-face{font-family:Pre;font-weight:500;src:url(fonts/Pretendard-Medium.otf)}
+@font-face{font-family:Pre;font-weight:600;src:url(fonts/Pretendard-SemiBold.otf)}
+@font-face{font-family:Pre;font-weight:700;src:url(fonts/Pretendard-Bold.otf)}
+@font-face{font-family:Pre;font-weight:800;src:url(fonts/Pretendard-ExtraBold.otf)}
+@font-face{font-family:Pre;font-weight:900;src:url(fonts/Pretendard-Black.otf)}
+@font-face{font-family:Serif;font-weight:200 900;src:url("fonts/NotoSerifKR[wght].ttf")}
+@font-face{font-family:Play;font-style:italic;font-weight:400 900;src:url("fonts/PlayfairDisplay-Italic[wght].ttf")}
+@font-face{font-family:Mont;font-weight:100 900;src:url("fonts/Montserrat[wght].ttf")}
+html,body{margin:0;background:#000}
+</style></head>
+<body>
+<canvas id="gl" width="1920" height="1080"></canvas>
+<script>
+"use strict";
+const W = 1920, H = 1080, IW = 1672, IH = 941;   // image coords are in the original 1672x941 space
+
+// ---------------- music map (measured from the track, video seconds) ----------------
+const BOOMS = [0.07, 0.56, 1.05, 2.66, 3.16, 3.65];
+const DROP = 3.97, PULSE = 0.3245, BAR = PULSE * 6;
+const BARS = [0, 1, 2, 3, 4, 5].map(i => DROP + i * BAR);   // 3.97 5.92 7.86 9.81 11.76 13.70
+const END = BARS[5];                                       // music cuts, final impact
+const DUR = 15;
+
+// ---------------- utils ----------------
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const eOutExpo = x => x >= 1 ? 1 : 1 - Math.pow(2, -10 * x);
+const eInExpo = x => x <= 0 ? 0 : Math.pow(2, 10 * x - 10);
+const eOutCubic = x => 1 - Math.pow(1 - x, 3);
+const eInOutCubic = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+const eOutBack = x => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const eInOutQuint = x => x < .5 ? 16 * x ** 5 : 1 - Math.pow(-2 * x + 2, 5) / 2;
+const hit = (t, at, decay = 0.12) => t < at ? 0 : Math.exp(-(t - at) / decay);   // impulse envelope
+function hash(n) { const x = Math.sin(n * 91.345 + 47.853) * 43758.5453; return x - Math.floor(x); }
+const GOLD = '#d9b77a', GOLD2 = '#f3dcab', GOLD3 = '#a8823f';
+
+// ---------------- canvases ----------------
+const C = document.createElement('canvas'); C.width = W; C.height = H;
+const ctx = C.getContext('2d');
+const IMG = {};
+function load(name, src) { return new Promise(r => { const i = new Image(); i.onload = () => { IMG[name] = i; r(); }; i.src = src; }); }
+
+// ---------------- plate camera ----------------
+// cam: {cx, cy, z, r}  — z=1 fits image width to screen. `par` scales towers about their base.
+const TOWER_ANCHOR = [858, 575];
+function camClamp(cam, vw = W, vh = H) {
+  const s = (W / IW) * cam.z;
+  const hw = vw / 2 / s, hh = vh / 2 / s;
+  const m = Math.abs(cam.r || 0) * 900 / s;                   // rotation margin
+  return {
+    s, cx: clamp(cam.cx, hw + m, IW - hw - m), cy: clamp(cam.cy, hh + m, IH - hh - m), r: cam.r || 0
+  };
+}
+function plate(cam, o = {}) {
+  const sx = o.sx ?? W / 2, sy = o.sy ?? H / 2, vw = o.vw ?? W, vh = o.vh ?? H;
+  const c = camClamp(cam, vw, vh);
+  const tf = () => { ctx.translate(sx, sy); ctx.rotate(c.r); ctx.scale(c.s, c.s); ctx.translate(-c.cx, -c.cy); };
+  ctx.save();
+  ctx.filter = o.filter || 'none';
+  tf();
+  ctx.drawImage(o.par ? IMG.clean : IMG.base, 0, 0, IW, IH);
+  ctx.restore();
+  if (o.between) { ctx.save(); o.between(c); ctx.restore(); }
+  if (o.par || o.between) {
+    ctx.save(); ctx.filter = o.filter || 'none'; tf();
+    const p = 1 + (o.par || 0);
+    ctx.translate(TOWER_ANCHOR[0], TOWER_ANCHOR[1]); ctx.scale(p, p); ctx.translate(-TOWER_ANCHOR[0], -TOWER_ANCHOR[1]);
+    ctx.drawImage(IMG.towers, 0, 0, IW, IH);
+    ctx.restore();
+  }
+  ctx.filter = 'none';
+  return c;
+}
+const grade = (b = 1, s = 1, c = 1, extra = '') => `brightness(${b}) saturate(${s}) contrast(${c}) ${extra}`;
+
+// ---------------- text helpers ----------------
+function font(size, weight = 900, fam = 'Pre', style = '') { return `${style} ${weight} ${size}px ${fam}`; }
+function txt(s, x, y, o = {}) {
+  ctx.save();
+  ctx.font = o.font || font(60);
+  ctx.textAlign = o.align || 'center'; ctx.textBaseline = o.base || 'alphabetic';
+  ctx.letterSpacing = (o.ls || 0) + 'px';
+  ctx.globalAlpha = o.alpha ?? 1;
+  if (o.blur) ctx.filter = `blur(${o.blur}px)`;
+  if (o.scale && o.scale !== 1) { ctx.translate(x, y); ctx.scale(o.scale, o.scale); ctx.translate(-x, -y); }
+  if (o.shadow) { ctx.shadowColor = o.shadow; ctx.shadowBlur = o.shadowBlur || 30; }
+  if (o.stroke) { ctx.lineWidth = o.lw || 2; ctx.strokeStyle = o.stroke; ctx.strokeText(s, x, y); }
+  if (o.fill !== null) { ctx.fillStyle = o.fill || '#fff'; ctx.fillText(s, x, y); }
+  ctx.restore();
+}
+function measure(s, f, ls = 0) { ctx.save(); ctx.font = f; ctx.letterSpacing = ls + 'px'; const w = ctx.measureText(s).width; ctx.restore(); return w; }
+// per-character reveal: each char rises out of a mask with blur, staggered
+function charsRise(s, x, y, f, t, t0, o = {}) {
+  const stagger = o.stagger ?? 0.035, dur = o.dur ?? 0.45, ls = o.ls || 0;
+  ctx.save(); ctx.font = f; ctx.letterSpacing = ls + 'px';
+  const total = ctx.measureText(s).width;
+  let cx = (o.align === 'left') ? x : x - total / 2;
+  const chars = [...s];
+  const size = parseFloat(f.match(/(\d+)px/)[1]);
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    const w = ctx.measureText(ch).width + ls;
+    const k = eOutExpo(seg(t, t0 + i * stagger, t0 + i * stagger + dur));
+    if (k > 0) {
+      ctx.save();
+      if (o.mask !== false) { ctx.beginPath(); ctx.rect(cx - 20, y - size * 1.05, w + 40, size * 1.35); ctx.clip(); }
+      ctx.globalAlpha = (o.alpha ?? 1) * clamp(k * 1.4);
+      const dy = (1 - k) * size * (o.rise ?? 1.0);
+      if (k < 0.98) ctx.filter = `blur(${(1 - k) * 10}px)`;
+      ctx.fillStyle = o.fill || '#fff';
+      if (o.shadow) { ctx.shadowColor = o.shadow; ctx.shadowBlur = o.shadowBlur || 30; }
+      ctx.textAlign = 'left'; ctx.fillText(ch, cx, y + dy);
+      ctx.restore();
+    }
+    cx += w;
+  }
+  ctx.restore();
+  return total;
+}
+function goldGrad(x0, y0, x1, y1, shift = 0) {
+  const g = ctx.createLinearGradient(x0, y0, x1, y1);
+  g.addColorStop(0, '#9c7536'); g.addColorStop(clamp(.35 + shift), '#f6e2b3'); g.addColorStop(clamp(.55 + shift), '#d2a85f'); g.addColorStop(1, '#8a6429');
+  return g;
+}
+function line(x0, y0, x1, y1, w = 2, col = GOLD, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = 'butt';
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); ctx.restore();
+}
+function flash(a, col = '255,255,255') { if (a > 0.001) { ctx.fillStyle = `rgba(${col},${a})`; ctx.fillRect(0, 0, W, H); } }
+function shade(a) { if (a > 0) { ctx.fillStyle = `rgba(4,7,16,${a})`; ctx.fillRect(0, 0, W, H); } }
+function gradBand(y0, y1, a) {
+  const g = ctx.createLinearGradient(0, y0, 0, y1);
+  g.addColorStop(0, 'rgba(3,6,14,0)'); g.addColorStop(.5, `rgba(3,6,14,${a})`); g.addColorStop(1, 'rgba(3,6,14,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, y0, W, y1 - y0);
+}
+function leak(t, t0, dur = 0.5, dir = 1) {          // warm light leak sweep
+  const k = seg(t, t0, t0 + dur); if (k <= 0 || k >= 1) return;
+  const a = Math.sin(k * Math.PI);
+  const x = lerp(-400, W + 400, dir > 0 ? eOutCubic(k) : 1 - eOutCubic(k));
+  ctx.save(); ctx.globalCompositeOperation = 'screen';
+  const g = ctx.createRadialGradient(x, H * .45, 0, x, H * .45, 900);
+  g.addColorStop(0, `rgba(255,196,120,${.75 * a})`); g.addColorStop(.35, `rgba(255,120,50,${.35 * a})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
+}
+function corners(a, inset = 54, len = 46) {           // viewfinder corner marks
+  if (a <= 0) return;
+  ctx.save(); ctx.globalAlpha = a; ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 2;
+  for (const [x, y, sx, sy] of [[inset, inset, 1, 1], [W - inset, inset, -1, 1], [inset, H - inset, 1, -1], [W - inset, H - inset, -1, -1]]) {
+    ctx.beginPath(); ctx.moveTo(x, y + sy * len); ctx.lineTo(x, y); ctx.lineTo(x + sx * len, y); ctx.stroke();
+  }
+  ctx.restore();
+}
+function tag(t, t0, x, y, label, o = {}) {             // small spaced label with gold tick
+  const k = eOutExpo(seg(t, t0, t0 + .5)); if (k <= 0) return;
+  const al = o.align || 'left';
+  ctx.save(); ctx.globalAlpha = k * (o.alpha ?? 1);
+  const w = 40 * k;
+  if (al === 'left') line(x, y - 9, x + w, y - 9, 2, GOLD);
+  txt(label, al === 'left' ? x + 56 : x, y, { font: o.font || font(22, 600, 'Mont'), ls: o.ls ?? 6, align: al, fill: o.fill || '#fff', alpha: k });
+  ctx.restore();
+}
+function particles(t, t0, n, o = {}) {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < n; i++) {
+    const life = o.life || 3, a0 = hash(i * 3.1) * life;
+    const age = (t - t0 + a0) % life; if (t < t0) continue;
+    const x = (hash(i * 7.7) * W + (o.vx || 0) * age);
+    const y = H * (o.y0 ?? 1.05) - age * (o.vy ?? 90) * (0.5 + hash(i * 1.3)) + Math.sin(age * 2 + i) * 14;
+    const r = 1 + hash(i * 5.5) * (o.r || 2.4);
+    const a = Math.sin(Math.PI * age / life) * (o.alpha ?? .8) * (0.4 + .6 * hash(i * 9.1));
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r * 4);
+    g.addColorStop(0, `rgba(255,226,170,${a})`); g.addColorStop(1, 'rgba(255,200,120,0)');
+    ctx.fillStyle = g; ctx.fillRect(x - r * 4, y - r * 4, r * 8, r * 8);
+  }
+  ctx.restore();
+}
+
+// ---------------- post FX state per frame ----------------
+let FX;
+function resetFX() { FX = { ca: 0, zoomBlur: 0, dir: [0, 0], vig: 0.42, grain: 0.045, center: [0.5, 0.5] }; }
+
+// =====================================================================
+//                               SCENES
+// =====================================================================
+const LINE1 = ['도시의', '높이를,', '다시 쓰다'];
+function sceneIntro(t) {
+  // shots behind each boom
+  const shots = [
+    { t0: BOOMS[0], cam: k => ({ cx: 840, cy: 250, z: lerp(3.0, 3.25, k) }), f: grade(.55, .35, 1.25) },
+    { t0: BOOMS[1], cam: k => ({ cx: lerp(1230, 1290, k), cy: 205, z: 2.5 }), f: grade(.55, .35, 1.25) },
+    { t0: BOOMS[2], cam: k => ({ cx: 858, cy: lerp(390, 360, k), z: lerp(1.75, 2.05, eOutCubic(k)) }), f: grade(.62, .55, 1.2), par: k => .05 * eOutCubic(k) },
+  ];
+  let i = shots.length - 1; while (i > 0 && t < shots[i].t0) i--;
+  const sh = shots[i], next = i < 2 ? shots[i + 1].t0 : BOOMS[3];
+  const k = seg(t, sh.t0, next);
+  plate(sh.cam(k), { filter: sh.f, par: sh.par ? sh.par(k) : 0 });
+  shade(.25);
+  gradBand(330, 750, .55);
+
+  // the line assembles word by word, one per boom
+  const f = font(132, 900);
+  const sp = 46;
+  const ws = LINE1.map(w => measure(w, f, -2));
+  const total = ws.reduce((a, b) => a + b, 0) + sp * 2;
+  let x = W / 2 - total / 2;
+  const out = seg(t, 2.42, 2.66);                       // exit: words fly up & blur
+  LINE1.forEach((w, j) => {
+    const b = BOOMS[j];
+    if (t >= b) {
+      const kk = eOutExpo(seg(t, b, b + .35));
+      const sc = lerp(1.35, 1, kk) + .02 * hit(t, b, .2);
+      const fill = j === 2 ? goldGrad(x, 470, x + ws[j], 590, .1 * Math.sin(t * 2)) : '#fff';
+      txt(w, x + ws[j] / 2, 590 - out * 120 * (1 + j * .3), {
+        font: f, ls: -2, scale: sc, blur: (1 - kk) * 14 + out * 18, alpha: (1 - out),
+        fill, shadow: 'rgba(0,0,0,.45)', shadowBlur: 40
+      });
+    }
+    x += ws[j] + sp;
+  });
+  // gold underline + location kicker while holding
+  const u = eOutExpo(seg(t, 1.25, 2.1));
+  if (u > 0 && out < 1) {
+    const ux = W / 2 - total / 2;
+    line(ux, 640, ux + total * u, 640, 3, GOLD, 1 - out);
+    tag(t, 1.45, W / 2, 430, 'DAEJEON  ·  JUNG-GU  ·  YUCHEON-DONG', { align: 'center', alpha: 1 - out, ls: 8 });
+  }
+  corners(.6 * (1 - out));
+  // boom flashes
+  for (const b of BOOMS.slice(0, 3)) flash(.55 * hit(t, b, .06));
+  for (const b of BOOMS) FX.ca += 2.2 * hit(t, b, .1);
+}
+
+function sceneTNS(t) {        // THE / NEW / SIGNATURE on booms 4-6, riser into the drop
+  const shots = [
+    { t0: BOOMS[3], cam: k => ({ cx: lerp(250, 300, k), cy: lerp(700, 735, k), z: 3.0 }), f: grade(.5, .5, 1.3) },
+    { t0: BOOMS[4], cam: k => ({ cx: lerp(1420, 1360, k), cy: 770, z: 2.5 }), f: grade(.5, .5, 1.3) },
+    { t0: BOOMS[5], cam: k => ({ cx: 858, cy: 330, z: lerp(2.2, 3.6, eInExpo(k)) }), f: grade(.6, .6, 1.25) },
+  ];
+  let i = 2; while (i > 0 && t < shots[i].t0) i--;
+  const sh = shots[i], next = i < 2 ? shots[i + 1].t0 : DROP;
+  const k = seg(t, sh.t0, next);
+  plate(sh.cam(k), { filter: sh.f });
+  shade(.3);
+  const kk = eOutExpo(seg(t, sh.t0, sh.t0 + .3));
+  if (i < 2) {
+    const word = i === 0 ? 'THE' : 'NEW';
+    const sc = lerp(1.6, 1, kk) * (1 + .04 * k);
+    // giant outlined word + solid echo
+    txt(word, W / 2, 700, { font: font(420, 900, 'Mont'), ls: 30, stroke: 'rgba(255,255,255,.95)', lw: 3, fill: null, scale: sc, blur: (1 - kk) * 10 });
+    txt(word, W / 2 + 14, 714, { font: font(420, 900, 'Mont'), ls: 30, fill: 'rgba(217,183,122,.18)', scale: sc * 1.02 });
+  } else {
+    const sc = lerp(1.4, 1, kk) + .25 * eInExpo(seg(t, 3.75, DROP));
+    txt('Signature', W / 2, 640, {
+      font: font(250, 600, 'Play', 'italic'), fill: goldGrad(500, 450, 1420, 680, .2 * k), scale: sc, blur: (1 - kk) * 12,
+      shadow: 'rgba(0,0,0,.5)', shadowBlur: 40
+    });
+    tag(t, BOOMS[5] + .05, W / 2, 380, 'THE NEW LANDMARK OF SEODAEJEON', { align: 'center', ls: 10 });
+    FX.zoomBlur = .12 * eInExpo(seg(t, 3.7, DROP));
+  }
+  corners(.6);
+  flash(.5 * hit(t, sh.t0, .06));
+  flash(.9 * eInExpo(seg(t, 3.82, DROP)));             // white-out into the drop
+  FX.ca += 2.5 * hit(t, sh.t0, .1);
+}
+
+function sceneDrop(t) {       // hero reveal + SIGNATURE behind the towers
+  const k = seg(t, DROP, DROP + 1.25);
+  const e = eOutExpo(k);
+  const drift = seg(t, DROP, BARS[1]);
+  const cam = { cx: lerp(858, 836, e), cy: lerp(330, 470, e), z: lerp(2.6, 1.1, e) - .05 * drift, r: lerp(-.05, 0, e) };
+  const par = lerp(.16, .0, e) + .03 * eInOutCubic(drift);
+  plate(cam, {
+    filter: grade(lerp(1.25, 1.02, e), 1.12, 1.08), par,
+    between: c => {
+      // giant wordmark sits behind the towers
+      const a = eOutExpo(seg(t, 4.12, 4.7));
+      if (a <= 0) return;
+      const x = W / 2 + lerp(260, -60, eOutCubic(drift));
+      const y = (300 - c.cy) * c.s + H / 2 + 120;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, 0, W * a, H); ctx.clip();            // wipe-on
+      txt('SIGNATURE', x, y, { font: font(300, 800, 'Mont'), ls: 26, fill: 'rgba(255,255,255,.93)', shadow: 'rgba(0,30,80,.35)', shadowBlur: 50 });
+      ctx.restore();
+    }
+  });
+  // lower-third gradient + labels
+  const g = ctx.createLinearGradient(0, H * .62, 0, H); g.addColorStop(0, 'rgba(3,6,14,0)'); g.addColorStop(1, 'rgba(3,6,14,.78)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  tag(t, 4.29, 96, 940, 'SEODAEJEON SIGNATURE', { ls: 8 });
+  charsRise('서대전 상떼빌 시그니처', 96, 1010, font(54, 700), t, 4.45, { align: 'left', stagger: .03, dur: .4 });
+  tag(t, 4.93, W - 96, 1004, '대전 중구 유천동', { align: 'right', font: font(28, 500), ls: 4, alpha: .9 });
+  corners(.5);
+  flash(1 * hit(t, DROP, .09));
+  leak(t, DROP, .7);
+  FX.ca += 4 * hit(t, DROP, .18);
+  FX.zoomBlur = .14 * hit(t, DROP, .12);
+}
+
+function scene47(t) {         // tilt-up the tower, floor counter to 47
+  const t0 = BARS[1], k = seg(t, t0, BARS[2]);
+  const e = eInOutQuint(seg(t, t0, t0 + 1.35));
+  const cam = { cx: lerp(820, 845, e), cy: lerp(515, 215, e), z: lerp(2.9, 2.55, e), r: lerp(.03, -.01, e) };
+  const c = plate(cam, { filter: grade(1.0, 1.05, 1.12), par: .0 });
+  // darken right side for the number
+  const g = ctx.createLinearGradient(W * .38, 0, W * .8, 0); g.addColorStop(0, 'rgba(3,6,14,0)'); g.addColorStop(1, 'rgba(3,6,14,.86)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // scanning floor line across the tower
+  const sy = lerp(H * .95, H * .08, e);
+  const scanA = 1 - seg(t, t0 + 1.2, t0 + 1.45);
+  ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = scanA;
+  const lg = ctx.createLinearGradient(0, sy - 60, 0, sy + 4); lg.addColorStop(0, 'rgba(255,214,140,0)'); lg.addColorStop(1, 'rgba(255,214,140,.35)');
+  ctx.fillStyle = lg; ctx.fillRect(0, sy - 60, W * .62, 64); ctx.restore();
+  line(0, sy, W * .62, sy, 2, GOLD2, .9 * scanA);
+  // ruler ticks on left edge, ticking on pulses
+  for (let i = 0; i < 24; i++) {
+    const y = ((i * 46 + e * 900) % 1104) - 12;
+    line(70, y, i % 4 === 0 ? 110 : 90, y, 2, 'rgba(255,255,255,.55)');
+  }
+  // counter
+  const n = Math.max(1, Math.round(47 * eOutCubic(seg(t, t0 + .1, t0 + 1.3))));
+  const land = hit(t, t0 + 1.3, .16);
+  const nx = 1480, ny = 640;
+  tag(t, t0 + .05, nx - 210, 330, 'SKYLINE', { ls: 10 });
+  txt('최고', nx - 205, 405, { font: font(52, 600), align: 'left', fill: '#fff', alpha: eOutExpo(seg(t, t0, t0 + .4)) });
+  const ka = eOutExpo(seg(t, t0, t0 + .35));
+  txt(String(n).padStart(2, '0'), nx + 20, ny + 70, {
+    font: font(330, 900), ls: -8, fill: goldGrad(nx - 250, 440, nx + 250, 720, .15 * Math.sin(t * 3)),
+    scale: (lerp(1.25, 1, ka)) * (1 + .06 * land), alpha: ka, shadow: 'rgba(0,0,0,.4)', shadowBlur: 40
+  });
+  txt('층', nx + 235, ny + 60, { font: font(84, 800), align: 'left', fill: '#fff', alpha: ka });
+  const kb = eOutExpo(seg(t, t0 + 1.3, t0 + 1.7));
+  line(nx - 205, 760, nx - 205 + 470 * kb, 760, 2, GOLD);
+  txt('도시를 내려다보는 스카이라인', nx - 205, 820, { font: font(38, 500), align: 'left', fill: 'rgba(255,255,255,.92)', alpha: kb });
+  corners(.5);
+  flash(.45 * hit(t, t0, .06)); flash(.25 * land, '255,226,170');
+  FX.ca += 2.5 * hit(t, t0, .12) + 1.5 * land;
+}
+
+function scene508(t) {        // three sliding panels + 508 counter
+  const t0 = BARS[2];
+  const panels = [
+    { at: t0, cam: k => ({ cx: 660, cy: lerp(380, 330, k), z: 2.25 }) },
+    { at: t0 + PULSE, cam: k => ({ cx: lerp(820, 880, k), cy: 760, z: 2.0 }) },
+    { at: t0 + 2 * PULSE, cam: k => ({ cx: 1350, cy: lerp(260, 230, k), z: 2.25 }) },
+  ];
+  ctx.fillStyle = '#05070d'; ctx.fillRect(0, 0, W, H);
+  const pw = W / 3;
+  panels.forEach((p, i) => {
+    const kk = eOutExpo(seg(t, p.at, p.at + .55));
+    if (kk <= 0) return;
+    const k = seg(t, p.at, BARS[3]);
+    const off = (1 - kk) * H * (i % 2 ? -1 : 1);
+    ctx.save(); ctx.beginPath(); ctx.rect(i * pw + 4, off, pw - 8, H); ctx.clip();
+    plate(p.cam(k), { sx: i * pw + pw / 2, sy: H / 2 + off, vw: pw, vh: H, filter: grade(.92, 1.05, 1.1) });
+    ctx.restore();
+  });
+  // counter band
+  const kb = eOutExpo(seg(t, 8.83, 9.2));
+  if (kb > 0) {
+    gradBand(300, 860, .85 * kb);
+    const n = Math.round(508 * eOutCubic(seg(t, 8.83, 9.47)));
+    const land = hit(t, 9.47, .16);
+    txt('총', 640, 625, { font: font(70, 700), fill: '#fff', alpha: kb, align: 'right' });
+    txt(String(n), W / 2, 650, { font: font(300, 900), ls: -6, fill: goldGrad(700, 420, 1220, 680), alpha: kb, scale: lerp(1.2, 1, kb) * (1 + .05 * land), shadow: 'rgba(0,0,0,.5)', shadowBlur: 40 });
+    txt('호', 1290, 625, { font: font(70, 700), fill: '#fff', alpha: kb, align: 'left' });
+    const kc = eOutExpo(seg(t, 9.15, 9.6));
+    line(W / 2 - 330 * kc, 712, W / 2 + 330 * kc, 712, 2, GOLD);
+    txt('아파트 324세대  +  오피스텔 184실', W / 2, 778, { font: font(44, 600), fill: '#fff', alpha: kc, ls: 1 });
+    flash(.2 * land, '255,226,170');
+    FX.ca += 1.2 * land;
+  }
+  tag(t, t0 + .1, 96, 120, 'SCALE', { ls: 10 });
+  flash(.4 * hit(t, t0, .06));
+  for (const p of panels) FX.ca += 1.6 * hit(t, p.at, .1);
+}
+
+function sceneTransit(t) {    // tram tracking shot, then location map
+  const t0 = BARS[3], tm = t0 + 3 * PULSE;              // 10.78 cut
+  if (t < tm) {
+    const k = seg(t, t0, tm);
+    const cam = { cx: lerp(170, 300, k), cy: lerp(610, 760, k), z: 2.6, r: -.03 };
+    plate(cam, { filter: grade(1.0, 1.15, 1.12) });
+    // speed streaks along the track direction
+    ctx.save(); ctx.globalCompositeOperation = 'screen';
+    for (let i = 0; i < 26; i++) {
+      const L = 200 + hash(i) * 500, sp = 2600 + hash(i * 2) * 2600;
+      const pos = ((t * sp + hash(i * 3) * 4000) % 4000) - 1000;
+      const x = pos, y = hash(i * 4) * H;
+      const a = .08 + hash(i * 5) * .22;
+      const g = ctx.createLinearGradient(x, y, x + L, y + L * .45);
+      g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(1, `rgba(220,235,255,${a})`);
+      ctx.strokeStyle = g; ctx.lineWidth = 1 + hash(i * 6) * 2;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + L, y + L * .45); ctx.stroke();
+    }
+    ctx.restore();
+    const g = ctx.createLinearGradient(W * .4, 0, W, 0); g.addColorStop(0, 'rgba(3,6,14,0)'); g.addColorStop(1, 'rgba(3,6,14,.8)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    tag(t, t0 + .08, 1130, 400, 'TRANSIT', { ls: 10 });
+    charsRise('도시철도 2호선 트램', 1130, 500, font(78, 800), t, t0 + .15, { align: 'left', stagger: .025 });
+    txt('(예정)', 1130 + measure('도시철도 2호선 트램', font(78, 800)) + 16, 500, { font: font(34, 500), align: 'left', fill: 'rgba(255,255,255,.75)', alpha: eOutExpo(seg(t, t0 + .5, t0 + .8)) });
+    const kc = eOutExpo(seg(t, t0 + PULSE * 2, t0 + PULSE * 2 + .4));
+    line(1130, 548, 1130 + 520 * kc, 548, 2, GOLD);
+    txt('서대전역 인근 · 도심 생활 인프라', 1130, 612, { font: font(40, 500), align: 'left', fill: '#fff', alpha: kc });
+    // whip-in
+    const w = 1 - seg(t, t0, t0 + .18);
+    FX.dir = [.05 * w, .02 * w];
+    flash(.35 * hit(t, t0, .06));
+  } else {
+    const k = seg(t, tm, BARS[4]);
+    const cam = { cx: lerp(845, 850, k), cy: lerp(470, 500, k), z: lerp(1.3, 1.42, eOutCubic(k)) };
+    const c = plate(cam, { filter: grade(.62, .75, 1.1) });
+    shade(.15);
+    // site pin with radar rings
+    const px = (858 - c.cx) * c.s + W / 2, py = (600 - c.cy) * c.s + H / 2;
+    for (let i = 0; i < 3; i++) {
+      const rk = ((t - tm) / 1.1 + i / 3) % 1;
+      ctx.save(); ctx.globalAlpha = (1 - rk) * .9; ctx.strokeStyle = GOLD2; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(px, py, 40 + rk * 520, (40 + rk * 520) * .55, 0, 0, 7); ctx.stroke(); ctx.restore();
+    }
+    const kp = eOutBack(seg(t, tm, tm + .35));
+    ctx.save(); ctx.translate(px, py - 10); ctx.scale(kp, kp);
+    ctx.fillStyle = GOLD; ctx.beginPath(); ctx.arc(0, -46, 26, Math.PI * .8, Math.PI * 2.2); ctx.lineTo(0, 0); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#0b1220'; ctx.beginPath(); ctx.arc(0, -46, 10, 0, 7); ctx.fill(); ctx.restore();
+    // callout
+    const kc = eOutExpo(seg(t, tm + .1, tm + .5));
+    line(px + 30, py - 60, px + 30 + 140 * kc, py - 200 * kc - 60 * (1 - kc), 2, GOLD2, kc);
+    tag(t, tm + .15, px + 190, py - 280, 'LOCATION', { ls: 10 });
+    charsRise('대전 중구 유천동', px + 190, py - 205, font(64, 800), t, tm + .2, { align: 'left', stagger: .03 });
+    flash(.35 * hit(t, tm, .06));
+    FX.ca += 1.5 * hit(t, tm, .1);
+  }
+  corners(.5);
+}
+
+function sceneLogo(t) {       // lockup on bar 5, punched by the final impact at END
+  const t0 = BARS[4];
+  const k = seg(t, t0, DUR);
+  const endk = hit(t, END, .2);
+  const cam = { cx: 840, cy: lerp(420, 440, k), z: lerp(1.12, 1.24, eOutCubic(k)) };
+  plate(cam, { filter: grade(lerp(.42, .36, k) + .25 * endk, .7, 1.1, `blur(${lerp(3, 6, eOutCubic(seg(t, t0, t0 + 1)))}px)`), par: .03 * k });
+  shade(.25);
+  gradBand(220, 880, .75);
+  particles(t, t0, 70, { life: 3.4, vy: 70, alpha: .7 });
+  // watermark script
+  const kw = eOutExpo(seg(t, t0 + .1, t0 + 1.2));
+  txt('Signature', W / 2 + lerp(80, -20, k), 640, { font: font(400, 500, 'Play', 'italic'), fill: `rgba(217,183,122,${.13 * kw})` });
+  // frame lines expanding from centre
+  const kl = eOutExpo(seg(t, t0, t0 + .7));
+  line(W / 2 - 520 * kl, 330, W / 2 + 520 * kl, 330, 1.5, GOLD, .9);
+  line(W / 2 - 520 * kl, 742, W / 2 + 520 * kl, 742, 1.5, GOLD, .9);
+  // kicker
+  charsRise('10년 장기일반민간임대 주상복합', W / 2, 400, font(30, 500), t, t0 + .15, { stagger: .012, ls: 4, fill: GOLD2, rise: .6 });
+  // main title, per-char rise; final impact punches scale
+  const sc = 1 + .035 * endk;
+  ctx.save(); ctx.translate(W / 2, 560); ctx.scale(sc, sc); ctx.translate(-W / 2, -560);
+  const tf = font(124, 700, 'Serif');
+  charsRise('서대전 상떼빌 시그니처', W / 2, 600, tf, t, t0 + .2, { stagger: .045, dur: .55, ls: 2, shadow: 'rgba(0,0,0,.5)', shadowBlur: 30 });
+  // shine sweep across the title
+  for (const sAt of [t0 + 1.05, END + .05]) {
+    const ks = seg(t, sAt, sAt + .6);
+    if (ks > 0 && ks < 1) {
+      ctx.save(); ctx.font = tf; ctx.letterSpacing = '2px'; ctx.textAlign = 'center';
+      const tw = ctx.measureText('서대전 상떼빌 시그니처').width;
+      const sx = lerp(W / 2 - tw / 2 - 200, W / 2 + tw / 2 + 200, eInOutCubic(ks));
+      const g = ctx.createLinearGradient(sx - 120, 0, sx + 120, 0);
+      g.addColorStop(0, 'rgba(255,240,200,0)'); g.addColorStop(.5, 'rgba(255,240,200,.95)'); g.addColorStop(1, 'rgba(255,240,200,0)');
+      ctx.fillStyle = g; ctx.globalCompositeOperation = 'source-atop';
+      ctx.fillText('서대전 상떼빌 시그니처', W / 2, 600);
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+  // facts line
+  const kf = eOutExpo(seg(t, t0 + .75, t0 + 1.2));
+  txt('최고 47층   ·   총 508호   ·   대전 중구 유천동', W / 2, 690, { font: font(34, 500), fill: '#fff', alpha: kf * .95, ls: 2 });
+  // disclaimer
+  const kd = seg(t, END + .15, END + .5);
+  txt('※ 본 영상의 이미지는 소비자의 이해를 돕기 위한 것으로 실제와 다를 수 있습니다.', W / 2, 1030, { font: font(20, 300), fill: 'rgba(255,255,255,.6)', alpha: kd });
+  flash(.6 * hit(t, t0, .07));
+  flash(.85 * endk * (t < END + .5 ? 1 : 0), '255,236,200');
+  leak(t, END, .9, -1);
+  if (t >= END) particles(t, END - 1.2, 50, { life: 2.2, vy: 260, r: 3, alpha: 1 * (1 - seg(t, END + .8, DUR)) });
+  FX.ca += 2 * hit(t, t0, .12) + 5 * endk;
+  FX.zoomBlur = .06 * hit(t, END, .15);
+}
+
+// =====================================================================
+function render(t) {
+  resetFX();
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (t < BOOMS[0]) { /* black */ }
+  else if (t < BOOMS[3]) sceneIntro(t);
+  else if (t < DROP) sceneTNS(t);
+  else if (t < BARS[1]) sceneDrop(t);
+  else if (t < BARS[2]) scene47(t);
+  else if (t < BARS[3]) scene508(t);
+  else if (t < BARS[4]) sceneTransit(t);
+  else sceneLogo(t);
+  // global pulse: tiny exposure kick on post-drop pulses
+  if (t > DROP && t < END) { const n = Math.floor((t - DROP) / PULSE); flash(.035 * hit(t, DROP + n * PULSE, .08)); }
+  const fo = seg(t, DUR - .35, DUR); if (fo > 0) { ctx.fillStyle = `rgba(0,0,0,${fo})`; ctx.fillRect(0, 0, W, H); }
+  post(t);
+}
+
+// ---------------- WebGL post: chromatic aberration, zoom/dir blur, grain, vignette ----------------
+const G = document.getElementById('gl');
+const gl = G.getContext('webgl', { preserveDrawingBuffer: true, antialias: false });
+let prog, tex, U = {};
+function initGL() {
+  const vs = `attribute vec2 p; varying vec2 uv; void main(){ uv = p*.5+.5; uv.y = 1.-uv.y; gl_Position = vec4(p,0,1); }`;
+  const fs = `precision highp float; varying vec2 uv; uniform sampler2D tex;
+    uniform float ca, zb, grain, vig, time; uniform vec2 dir, ctr;
+    float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233)) + time*7.13) * 43758.5453); }
+    vec3 samp(vec2 u){
+      vec2 d = (u - ctr);
+      float r = texture2D(tex, u + d * ca * 0.004).r;
+      float g = texture2D(tex, u).g;
+      float b = texture2D(tex, u - d * ca * 0.004).b;
+      return vec3(r,g,b);
+    }
+    void main(){
+      vec3 col = vec3(0.);
+      float n = 0.;
+      for (int i = 0; i < 16; i++) {
+        float f = float(i) / 15.;
+        vec2 u = uv;
+        u = ctr + (u - ctr) * (1. - zb * f);
+        u += dir * (f - .5);
+        col += samp(u); n += 1.;
+      }
+      col /= n;
+      vec2 q = uv - .5;
+      col *= 1. - vig * smoothstep(.25, .95, length(q * vec2(1.0, 1.25)));
+      col += (h(uv * vec2(1920., 1080.)) - .5) * grain;
+      gl_FragColor = vec4(col, 1.);
+    }`;
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s); return s; };
+  prog = gl.createProgram(); gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(prog); gl.useProgram(prog);
+  const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  for (const n of ['ca', 'zb', 'grain', 'vig', 'time', 'dir', 'ctr']) U[n] = gl.getUniformLocation(prog, n);
+}
+function post(t) {
+  gl.viewport(0, 0, W, H);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, C);
+  gl.uniform1f(U.ca, Math.min(FX.ca, 6) + 0.35);
+  gl.uniform1f(U.zb, FX.zoomBlur); gl.uniform1f(U.grain, FX.grain); gl.uniform1f(U.vig, FX.vig);
+  gl.uniform1f(U.time, t); gl.uniform2f(U.dir, FX.dir[0], FX.dir[1]); gl.uniform2f(U.ctr, FX.center[0], FX.center[1]);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+window.ready = (async () => {
+  const fams = ['900 50px Pre', '800 50px Pre', '700 50px Pre', '600 50px Pre', '500 50px Pre', '300 50px Pre', '700 50px Serif', 'italic 500 50px Play', 'italic 600 50px Play', '800 50px Mont', '900 50px Mont', '600 50px Mont'];
+  await Promise.all(fams.map(f => document.fonts.load(f, '서대전 상떼빌 시그니처 최고층호 SIGNATURE Signature 0123456789')));
+  const q = new URLSearchParams(location.search), sfx = q.get('hi') ? '_x2' : '';
+  await Promise.all([load('base', `base${sfx}.jpg`), load('clean', `clean${sfx}.jpg`), load('towers', `towers${sfx}.png`)]);
+  initGL();
+  return true;
+})();
+window.frame = t => { render(t); return G.toDataURL('image/png'); };
+</script></body></html>
