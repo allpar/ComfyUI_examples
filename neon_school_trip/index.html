@@ -1,0 +1,302 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:Jua;src:url(fonts/Jua-Regular.ttf)}
+@font-face{font-family:Monoton;src:url(fonts/Monoton-Regular.ttf)}
+html,body{margin:0;background:#000}
+canvas{display:block}
+</style></head>
+<body><canvas id="c" width="1920" height="1080"></canvas>
+<script>
+const W = 1920, H = 1080;
+const BEAT = 0.483853;           // 124 BPM, measured from the track
+const B = n => n * BEAT;         // beat index -> seconds (beat 0 = video t 0)
+const DUR = 15;
+
+const PINK = [255, 46, 200], CYAN = [30, 236, 255], YELLOW = [255, 226, 40];
+const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+const mix = (c, d, k) => c.map((v, i) => Math.round(v + (d[i] - v) * k));
+
+// ---------- deterministic noise ----------
+function rng(seed) { let s = seed >>> 0 || 1; return () => ((s = Math.imul(s ^ (s >>> 15), 0x2c1b3c6d) + 0x9e3779b9 >>> 0) / 4294967296); }
+function hash(n) { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+
+// ---------- brick wall ----------
+function makeWall() {
+  const alb = document.createElement('canvas'); alb.width = W; alb.height = H;
+  const g = alb.getContext('2d');
+  const r = rng(7);
+  g.fillStyle = 'rgb(62,58,56)'; g.fillRect(0, 0, W, H);           // mortar
+  const bw = 132, bh = 54, m = 7;
+  for (let row = -1, y = -20; y < H + bh; row++, y += bh) {
+    const off = (row & 1) ? bw / 2 : 0;
+    for (let x = -bw + off; x < W + bw; x += bw) {
+      const v = 0.75 + r() * 0.5;
+      const red = r() < 0.15;
+      const base = red ? [104, 54, 48] : [78 + r() * 26, 58 + r() * 12, 54 + r() * 10];
+      g.fillStyle = rgb(base.map(c => Math.min(255, c * v)));
+      const jx = (r() - 0.5) * 2, jy = (r() - 0.5) * 2;
+      g.beginPath();
+      g.roundRect(x + m / 2 + jx, y + m / 2 + jy, bw - m, bh - m, 4);
+      g.fill();
+      // baked relief: top highlight, bottom shadow
+      const gr = g.createLinearGradient(0, y, 0, y + bh);
+      gr.addColorStop(0, 'rgba(255,255,255,0.10)'); gr.addColorStop(0.18, 'rgba(255,255,255,0)');
+      gr.addColorStop(0.8, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,0.35)');
+      g.fillStyle = gr; g.fill();
+    }
+  }
+  // grain + chips
+  const id = g.getImageData(0, 0, W, H), d = id.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (r() - 0.5) * 16;
+    d[i] += n; d[i + 1] += n * 0.9; d[i + 2] += n * 0.85;
+  }
+  g.putImageData(id, 0, 0);
+  for (let i = 0; i < 1400; i++) {
+    g.fillStyle = `rgba(20,16,14,${0.25 + r() * 0.4})`;
+    g.beginPath(); g.arc(r() * W, r() * H, 1 + r() * 3.5, 0, 7); g.fill();
+  }
+  // grime streaks
+  for (let i = 0; i < 40; i++) {
+    const x = r() * W, gr = g.createLinearGradient(0, 0, 0, H);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(r(), `rgba(0,0,0,${0.12 + r() * 0.15})`); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(x, 0, 20 + r() * 60, H);
+  }
+  // dark ambient version
+  const amb = document.createElement('canvas'); amb.width = W; amb.height = H;
+  const a = amb.getContext('2d');
+  a.drawImage(alb, 0, 0);
+  a.fillStyle = 'rgba(4,4,12,0.86)'; a.fillRect(0, 0, W, H);
+  const vg = a.createRadialGradient(W / 2, H / 2, 200, W / 2, H / 2, 1150);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.75)');
+  a.fillStyle = vg; a.fillRect(0, 0, W, H);
+  return { alb, amb };
+}
+
+// ---------- signs ----------
+// A sign = a neon tube shape drawn by `path(ctx)` (stroke) at canvas coords.
+// Each sign is pre-rendered once into layers, then composited per frame.
+const PAD = 140;
+function textSign(o) {
+  return Object.assign({ lw: 5, font: 'Jua', align: 'center' }, o, {
+    path(g) {
+      g.font = `${o.size}px ${o.font || 'Jua'}`;
+      g.textAlign = o.align || 'center'; g.textBaseline = 'middle';
+      if (o.fill) g.fillText(o.text, o.x, o.y); else g.strokeText(o.text, o.x, o.y);
+    },
+    measure(g) {
+      g.font = `${o.size}px ${o.font || 'Jua'}`;
+      const m = g.measureText(o.text), w = m.width;
+      const x0 = (o.align || 'center') === 'center' ? o.x - w / 2 : o.align === 'right' ? o.x - w : o.x;
+      return [x0, o.y - o.size * 0.62, w, o.size * 1.24];
+    }
+  });
+}
+function shapeSign(o) { return Object.assign({ lw: 5 }, o); }
+
+function prerender(s) {
+  const tmp = document.createElement('canvas').getContext('2d');
+  const [bx, by, bw, bh] = s.measure ? s.measure(tmp) : s.box;
+  const x0 = Math.floor(bx - PAD), y0 = Math.floor(by - PAD);
+  const w = Math.ceil(bw + PAD * 2), h = Math.ceil(bh + PAD * 2);
+  const mk = (fn) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); g.translate(-x0, -y0); g.lineJoin = g.lineCap = 'round'; fn(g); return c; };
+  const col = s.color, lw = s.lw;
+  const stroke = (g, width, style, blur) => {
+    g.filter = blur ? `blur(${blur}px)` : 'none';
+    g.strokeStyle = style; g.fillStyle = style; g.lineWidth = width; s.path(g);
+  };
+  s.x0 = x0; s.y0 = y0;
+  s.unlit = mk(g => {               // glass tube when off + its shadow on the wall
+    g.save(); g.translate(5, 9); stroke(g, lw + 3, 'rgba(0,0,0,0.75)', 4); g.restore();
+    stroke(g, lw + 1, rgb(mix(col, [70, 70, 80], 0.72), 0.55), 0);
+    stroke(g, 1.2, 'rgba(255,255,255,0.10)', 0);
+  });
+  s.shadow = mk(g => { g.translate(5, 9); stroke(g, lw + 3, 'rgba(0,0,0,0.55)', 5); });
+  s.glowWide = mk(g => { stroke(g, lw * 6, rgb(col, 0.55), 34); stroke(g, lw * 3, rgb(col, 0.6), 16); });
+  s.glowMid = mk(g => { stroke(g, lw * 2.2, rgb(col, 0.9), 6); });
+  s.tube = mk(g => { stroke(g, lw, rgb(mix(col, [255, 255, 255], 0.25)), 0); });
+  s.core = mk(g => { stroke(g, Math.max(1.4, lw * 0.38), rgb(mix(col, [255, 255, 255], 0.82)), 0); });
+  // low-res light emitter for the wall
+  const q = 4, lc = document.createElement('canvas'); lc.width = Math.ceil(w / q); lc.height = Math.ceil(h / q);
+  const lg = lc.getContext('2d'); lg.scale(1 / q, 1 / q); lg.translate(-x0, -y0); lg.lineJoin = lg.lineCap = 'round';
+  lg.filter = 'blur(26px)'; lg.strokeStyle = lg.fillStyle = rgb(col, 1); lg.lineWidth = lw * 14; s.path(lg);
+  s.light = lc; s.lightW = w; s.lightH = h;
+}
+
+// ---------- timing: flicker / on / off ----------
+// Flicker pulses land on 16th notes leading into the on-beat.
+const PATTERNS = [
+  [[-8, .5, .9], [-7, .25, .4], [-5, .4, 1], [-3, .3, .7], [-2, .2, .5]],
+  [[-6, .35, .8], [-4, .5, 1], [-3, .2, .4], [-1, .3, .9]],
+  [[-4, .3, .9], [-3, .2, .5], [-2, .4, 1]],
+  [[-3, .4, .9], [-2, .2, .6]],
+  [[-12, .2, .6], [-11, .3, .9], [-9, .5, 1], [-6, .25, .5], [-5, .4, .9], [-3, .2, .4], [-2, .5, 1], [-1, .15, .5]],
+];
+const S16 = BEAT / 4;
+function signState(s, t) {
+  const on = B(s.on), off = s.off != null ? B(s.off) : 1e9;
+  let v = 0;
+  if (t >= on && t < off) {
+    v = 1 + 0.45 * Math.exp(-(t - on) / 0.09);                 // strike flash
+    if (s.glitch) for (const gb of s.glitch) {                  // a loose tube that stutters once
+      const gt = B(gb); if (t >= gt && t < gt + S16 * 1.5) v *= (Math.floor((t - gt) / (S16 * 0.38)) % 2) ? 1 : 0.08;
+    }
+  } else if (t < on) {
+    for (const [k, len, lvl] of PATTERNS[s.pat || 0]) {
+      const st = on + k * S16; if (t >= st && t < st + S16 * len) v = lvl;
+    }
+  } else {                                                      // switching off: one dying blink
+    const d = t - off;
+    if (d < 0.035) v = 0.3; else if (d > 0.07 && d < 0.10) v = 0.55; else v = 0;
+  }
+  // mains hum
+  if (v > 0) v *= 0.97 + 0.03 * Math.sin(t * 2 * Math.PI * 60 * 0.5 + s.on);
+  return v;
+}
+function pulse(t) {                    // kick envelope on every beat, accent on downbeats
+  const n = Math.floor(t / BEAT + 1e-6), dt = t - n * BEAT;
+  const acc = (n % 4 === 0) ? 1 : 0.6;
+  return acc * Math.exp(-dt / 0.13);
+}
+
+// ---------- scene content ----------
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let WALL, SIGNS = [], light, lctx, lit, litx;
+
+function star(cx, cy, r) {
+  return g => {
+    g.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4 - Math.PI / 2, rr = i % 2 ? r * 0.28 : r;
+      g.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+    }
+    g.closePath(); g.stroke();
+  };
+}
+function heart(cx, cy, s) {
+  return g => {
+    g.beginPath();
+    g.moveTo(cx, cy + s * 0.9);
+    g.bezierCurveTo(cx - s * 1.5, cy - s * 0.1, cx - s * 0.75, cy - s * 1.15, cx, cy - s * 0.45);
+    g.bezierCurveTo(cx + s * 0.75, cy - s * 1.15, cx + s * 1.5, cy - s * 0.1, cx, cy + s * 0.9);
+    g.stroke();
+  };
+}
+
+function build() {
+  const S = [];
+  // ===== Scene 1: title (beats 0 - 7.5) =====
+  S.push(textSign({ text: 'SCHOOL TRIP', font: 'Monoton', size: 84, fill: true, x: W / 2, y: 236, color: CYAN, lw: 3, on: 2, off: 7.5, pat: 2 }));
+  S.push(textSign({ text: '수학여행', size: 250, x: W / 2, y: 500, color: PINK, lw: 6, on: 4, off: 7.5, pat: 4 }));
+  S.push(textSign({ text: '안전 안내', size: 150, x: W / 2, y: 760, color: YELLOW, lw: 5, on: 5, off: 7.5, pat: 3 }));
+  S.push(shapeSign({ box: [430, 330, 1060, 560], color: CYAN, lw: 5, on: 4, off: 7.5, pat: 1,
+    path: g => { g.beginPath(); g.roundRect(430, 340, 1060, 540, 60); g.stroke(); } }));
+  S.push(shapeSign({ box: [300, 280, 60, 60], color: YELLOW, lw: 4, on: 6, off: 7.5, pat: 3, path: star(330, 310, 34) }));
+  S.push(shapeSign({ box: [1560, 820, 60, 60], color: PINK, lw: 4, on: 6.5, off: 7.5, pat: 3, path: star(1590, 850, 30) }));
+
+  // ===== Scene 2: meeting info (beats 8 - 13.5) =====
+  S.push(textSign({ text: '집합 안내', size: 70, x: W / 2, y: 175, color: CYAN, lw: 3.5, on: 8, off: 13.5, pat: 2 }));
+  S.push(shapeSign({ box: [760, 220, 400, 20], color: CYAN, lw: 3.5, on: 8, off: 13.5, pat: 2,
+    path: g => { g.beginPath(); g.moveTo(800, 230); g.lineTo(1120, 230); g.stroke(); } }));
+  S.push(textSign({ text: '10월 1일 (목)', size: 150, x: W / 2, y: 360, color: PINK, lw: 5, on: 8, off: 13.5, pat: 1 }));
+  S.push(textSign({ text: '08:00', size: 270, x: W / 2, y: 615, color: YELLOW, lw: 6, on: 9, off: 13.5, pat: 3 }));
+  S.push(shapeSign({ box: [430, 560, 120, 120], color: YELLOW, lw: 4.5, on: 9, off: 13.5, pat: 3,
+    path: g => { g.beginPath(); g.arc(490, 620, 52, 0, 7); g.stroke(); g.beginPath(); g.moveTo(490, 620); g.lineTo(490, 586); g.moveTo(490, 620); g.lineTo(514, 632); g.stroke(); } }));
+  S.push(textSign({ text: '학교 집합', size: 150, x: W / 2, y: 865, color: CYAN, lw: 5, on: 10, off: 13.5, pat: 3 }));
+  S.push(shapeSign({ box: [1370, 810, 110, 110], color: PINK, lw: 4.5, on: 11, off: 13.5, pat: 3,
+    path: g => { // map pin
+      g.beginPath(); g.arc(1425, 845, 30, Math.PI * 0.82, Math.PI * 2.18); g.lineTo(1425, 912); g.closePath(); g.stroke();
+      g.beginPath(); g.arc(1425, 845, 10, 0, 7); g.stroke(); } }));
+
+  // ===== Scene 3: three promises (beats 14 - 23.5) =====
+  S.push(textSign({ text: '안전 약속 3가지', size: 110, x: W / 2, y: 175, color: YELLOW, lw: 4.5, on: 14, off: 23.5, pat: 1 }));
+  const items = [['혼자 다니지 않기', PINK, 15], ['버스에선 안전벨트', CYAN, 17], ['다치면 바로 알리기', YELLOW, 19]];
+  items.forEach(([txt, col, on], i) => {
+    const y = 400 + i * 225, cx = 500;
+    S.push(shapeSign({ box: [cx - 66, y - 66, 132, 132], color: col, lw: 5, on, off: 23.5, pat: 2,
+      path: g => { g.beginPath(); g.arc(cx, y, 60, 0, 7); g.stroke(); } }));
+    S.push(textSign({ text: String(i + 1), size: 96, x: cx, y: y + 4, color: col, lw: 4.5, on, off: 23.5, pat: 2 }));
+    S.push(textSign({ text: txt, size: 128, x: 610, y: y + 4, align: 'left', color: col, lw: 5, on, off: 23.5, pat: 3 }));
+  });
+
+  // ===== Scene 4: closing (beats 24 - end) =====
+  S.push(textSign({ text: '안전한', size: 150, x: W / 2, y: 330, color: CYAN, lw: 5, on: 24, pat: 4, glitch: [27.5] }));
+  S.push(textSign({ text: '수학여행을 위하여', size: 175, x: W / 2, y: 560, color: PINK, lw: 6, on: 25, pat: 3 }));
+  S.push(shapeSign({ box: [890, 700, 140, 140], color: YELLOW, lw: 5, on: 26, pat: 2, path: heart(960, 790, 52) }));
+  S.push(shapeSign({ box: [340, 280, 70, 70], color: YELLOW, lw: 4, on: 26.5, pat: 3, path: star(375, 315, 34) }));
+  S.push(shapeSign({ box: [1510, 650, 70, 70], color: CYAN, lw: 4, on: 27, pat: 3, path: star(1545, 685, 30) }));
+  S.push(shapeSign({ box: [1580, 250, 70, 70], color: PINK, lw: 4, on: 27.5, pat: 3, path: star(1610, 280, 22) }));
+  S.forEach(x => { x.show = x.on < 8 ? 0 : x.on < 14 ? 7.6 : x.on < 24 ? 13.6 : 23.6; });
+  S.forEach(prerender);
+  return S;
+}
+
+// ---------- frame ----------
+function render(t) {
+  const p = pulse(t);
+  // gentle push-in per scene + kick on the beat
+  const sceneStart = t < B(8) ? 0 : t < B(14) ? B(8) : t < B(24) ? B(14) : B(24);
+  const zoom = 1 + 0.025 * Math.min(1, (t - sceneStart) / 4) + 0.006 * p;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  ctx.setTransform(zoom, 0, 0, zoom, W / 2 * (1 - zoom), H / 2 * (1 - zoom));
+  ctx.drawImage(WALL.amb, 0, 0);
+
+  // light map (quarter res) -> multiplied by brick albedo -> added
+  lctx.globalCompositeOperation = 'source-over'; lctx.fillStyle = '#000'; lctx.fillRect(0, 0, W / 4, H / 4);
+  lctx.globalCompositeOperation = 'lighter';
+  const states = SIGNS.map(s => signState(s, t));
+  SIGNS.forEach((s, i) => {
+    const v = states[i]; if (v <= 0) return;
+    lctx.globalAlpha = Math.min(1, v * (0.75 + 0.3 * p));
+    lctx.drawImage(s.light, s.x0 / 4, s.y0 / 4, s.lightW / 4, s.lightH / 4);
+    lctx.globalAlpha *= 0.5; lctx.drawImage(s.light, s.x0 / 4 - s.lightW / 8, s.y0 / 4 - s.lightH / 8, s.lightW / 2, s.lightH / 2); // wide spill
+  });
+  lctx.globalAlpha = 1;
+  litx.globalCompositeOperation = 'source-over'; litx.drawImage(WALL.alb, 0, 0);
+  litx.globalCompositeOperation = 'multiply'; litx.drawImage(light, 0, 0, W, H);
+  ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 1;
+  ctx.drawImage(lit, 0, 0);
+
+  // tubes
+  SIGNS.forEach((s, i) => {
+    const v = states[i];
+    const visible = t >= B(s.show) && (s.off == null || t < B(s.off) + 0.12); // glass only within its scene
+    if (!visible && v <= 0) return;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = v > 0 ? 0.5 : 1;
+    ctx.drawImage(v > 0 ? s.shadow : s.unlit, s.x0, s.y0);
+    if (v <= 0) return;
+    const k = v * (0.9 + 0.14 * p);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = Math.min(1, k * 0.85); ctx.drawImage(s.glowWide, s.x0, s.y0);
+    ctx.globalAlpha = Math.min(1, k * 0.9); ctx.drawImage(s.glowMid, s.x0, s.y0);
+    ctx.globalAlpha = Math.min(1, k); ctx.drawImage(s.tube, s.x0, s.y0);
+    ctx.globalAlpha = Math.min(1, k * 0.95); ctx.drawImage(s.core, s.x0, s.y0);
+    if (k > 1) { ctx.globalAlpha = Math.min(1, k - 1) ; ctx.drawImage(s.glowMid, s.x0, s.y0); }
+  });
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // haze + vignette + fade
+  const vg = ctx.createRadialGradient(W / 2, H / 2, 380, W / 2, H / 2, 1200);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.6)');
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+  const fadeIn = Math.max(0, 1 - t / 0.25), fadeOut = Math.max(0, (t - (DUR - 0.6)) / 0.6);
+  const f = Math.max(fadeIn, Math.min(1, fadeOut));
+  if (f > 0) { ctx.fillStyle = `rgba(0,0,0,${f})`; ctx.fillRect(0, 0, W, H); }
+}
+
+window.ready = (async () => {
+  await document.fonts.ready;
+  WALL = makeWall();
+  light = document.createElement('canvas'); light.width = W / 4; light.height = H / 4; lctx = light.getContext('2d');
+  lit = document.createElement('canvas'); lit.width = W; lit.height = H; litx = lit.getContext('2d');
+  SIGNS = build();
+  return true;
+})();
+window.render = render;
+window.frame = (t) => { render(t); return cv.toDataURL('image/png'); };
+</script></body></html>
