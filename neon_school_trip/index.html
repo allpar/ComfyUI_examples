@@ -8,7 +8,9 @@ canvas{display:block}
 </style></head>
 <body><canvas id="c" width="1920" height="1080"></canvas>
 <script>
-const W = 1920, H = 1080;
+const V = new URLSearchParams(location.search).has('v');   // ?v -> vertical 9:16
+const W = V ? 1080 : 1920, H = V ? 1920 : 1080;
+document.getElementById('c').width = W; document.getElementById('c').height = H;
 const BEAT = 0.483853;           // 124 BPM, measured from the track
 const B = n => n * BEAT;         // beat index -> seconds (beat 0 = video t 0)
 const DUR = 15;
@@ -68,7 +70,7 @@ function makeWall() {
   const a = amb.getContext('2d');
   a.drawImage(alb, 0, 0);
   a.fillStyle = 'rgba(4,4,12,0.86)'; a.fillRect(0, 0, W, H);
-  const vg = a.createRadialGradient(W / 2, H / 2, 200, W / 2, H / 2, 1150);
+  const vg = a.createRadialGradient(W / 2, H / 2, 200, W / 2, H / 2, Math.max(W, H) * 0.6);
   vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.75)');
   a.fillStyle = vg; a.fillRect(0, 0, W, H);
   return { alb, amb };
@@ -227,6 +229,59 @@ function build() {
   S.push(shapeSign({ box: [340, 280, 70, 70], color: YELLOW, lw: 4, on: 26.5, pat: 3, path: star(375, 315, 34) }));
   S.push(shapeSign({ box: [1510, 650, 70, 70], color: CYAN, lw: 4, on: 27, pat: 3, path: star(1545, 685, 30) }));
   S.push(shapeSign({ box: [1580, 250, 70, 70], color: PINK, lw: 4, on: 27.5, pat: 3, path: star(1610, 280, 22) }));
+  return finish(S);
+}
+
+function buildVertical() {
+  const S = [], cx = W / 2;
+  // ===== Scene 1: title =====
+  S.push(textSign({ text: 'SCHOOL TRIP', font: 'Monoton', size: 76, fill: true, x: cx, y: 560, color: CYAN, lw: 3, on: 2, off: 7.5, pat: 2 }));
+  S.push(shapeSign({ box: [90, 650, 900, 640], color: CYAN, lw: 5, on: 4, off: 7.5, pat: 1,
+    path: g => { g.beginPath(); g.roundRect(100, 660, 880, 620, 60); g.stroke(); } }));
+  S.push(textSign({ text: '수학여행', size: 195, x: cx, y: 880, color: PINK, lw: 6, on: 4, off: 7.5, pat: 4 }));
+  S.push(textSign({ text: '안전 안내', size: 140, x: cx, y: 1120, color: YELLOW, lw: 5, on: 5, off: 7.5, pat: 3 }));
+  S.push(shapeSign({ box: [120, 440, 70, 70], color: YELLOW, lw: 4, on: 6, off: 7.5, pat: 3, path: star(155, 475, 34) }));
+  S.push(shapeSign({ box: [880, 1370, 70, 70], color: PINK, lw: 4, on: 6.5, off: 7.5, pat: 3, path: star(915, 1405, 30) }));
+
+  // ===== Scene 2: meeting info =====
+  S.push(textSign({ text: '집합 안내', size: 72, x: cx, y: 470, color: CYAN, lw: 3.5, on: 8, off: 13.5, pat: 2 }));
+  S.push(shapeSign({ box: [370, 515, 340, 20], color: CYAN, lw: 3.5, on: 8, off: 13.5, pat: 2,
+    path: g => { g.beginPath(); g.moveTo(390, 525); g.lineTo(690, 525); g.stroke(); } }));
+  S.push(textSign({ text: '10월 1일 (목)', size: 132, x: cx, y: 700, color: PINK, lw: 5, on: 8, off: 13.5, pat: 1 }));
+  S.push(textSign({ text: '08:00', size: 215, x: cx + 50, y: 960, color: YELLOW, lw: 6, on: 9, off: 13.5, pat: 3 }));
+  S.push(shapeSign({ box: [130, 900, 120, 120], color: YELLOW, lw: 4.5, on: 9, off: 13.5, pat: 3,
+    path: g => { g.beginPath(); g.arc(190, 965, 48, 0, 7); g.stroke(); g.beginPath(); g.moveTo(190, 965); g.lineTo(190, 933); g.moveTo(190, 965); g.lineTo(212, 977); g.stroke(); } }));
+  S.push(shapeSign({ box: [485, 1110, 110, 110], color: PINK, lw: 4.5, on: 10, off: 13.5, pat: 3,
+    path: g => {
+      g.beginPath(); g.arc(540, 1140, 30, Math.PI * 0.82, Math.PI * 2.18); g.lineTo(540, 1207); g.closePath(); g.stroke();
+      g.beginPath(); g.arc(540, 1140, 10, 0, 7); g.stroke(); } }));
+  S.push(textSign({ text: '학교 집합', size: 150, x: cx, y: 1330, color: CYAN, lw: 5, on: 10, off: 13.5, pat: 3 }));
+
+  // ===== Scene 3: three promises =====
+  S.push(textSign({ text: '안전 약속 3가지', size: 100, x: cx, y: 420, color: YELLOW, lw: 4.5, on: 14, off: 23.5, pat: 1 }));
+  S.push(shapeSign({ box: [300, 470, 480, 20], color: YELLOW, lw: 3.5, on: 14, off: 23.5, pat: 1,
+    path: g => { g.beginPath(); g.moveTo(320, 480); g.lineTo(760, 480); g.stroke(); } }));
+  const items = [['혼자 다니지 않기', PINK, 15], ['버스에선 안전벨트', CYAN, 17], ['다치면 바로 알리기', YELLOW, 19]];
+  items.forEach(([txt, col, on], i) => {
+    const y = 640 + i * 360;
+    S.push(shapeSign({ box: [cx - 60, y - 60, 120, 120], color: col, lw: 5, on, off: 23.5, pat: 2,
+      path: g => { g.beginPath(); g.arc(cx, y, 54, 0, 7); g.stroke(); } }));
+    S.push(textSign({ text: String(i + 1), size: 86, x: cx, y: y + 4, color: col, lw: 4.5, on, off: 23.5, pat: 2 }));
+    S.push(textSign({ text: txt, size: 96, x: cx, y: y + 150, color: col, lw: 4.5, on, off: 23.5, pat: 3 }));
+  });
+
+  // ===== Scene 4: closing =====
+  S.push(textSign({ text: '안전한', size: 150, x: cx, y: 690, color: CYAN, lw: 5, on: 24, pat: 4, glitch: [27.5] }));
+  S.push(textSign({ text: '수학여행을', size: 175, x: cx, y: 915, color: PINK, lw: 6, on: 25, pat: 3 }));
+  S.push(textSign({ text: '위하여', size: 175, x: cx, y: 1125, color: PINK, lw: 6, on: 25, pat: 2 }));
+  S.push(shapeSign({ box: [470, 1240, 140, 140], color: YELLOW, lw: 5, on: 26, pat: 2, path: heart(540, 1330, 52) }));
+  S.push(shapeSign({ box: [130, 540, 70, 70], color: YELLOW, lw: 4, on: 26.5, pat: 3, path: star(165, 575, 34) }));
+  S.push(shapeSign({ box: [860, 1220, 70, 70], color: CYAN, lw: 4, on: 27, pat: 3, path: star(895, 1255, 30) }));
+  S.push(shapeSign({ box: [850, 520, 70, 70], color: PINK, lw: 4, on: 27.5, pat: 3, path: star(880, 550, 22) }));
+  return finish(S);
+}
+
+function finish(S) {
   S.forEach(x => { x.show = x.on < 8 ? 0 : x.on < 14 ? 7.6 : x.on < 24 ? 13.6 : 23.6; });
   S.forEach(prerender);
   return S;
@@ -281,7 +336,7 @@ function render(t) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
   // haze + vignette + fade
-  const vg = ctx.createRadialGradient(W / 2, H / 2, 380, W / 2, H / 2, 1200);
+  const vg = ctx.createRadialGradient(W / 2, H / 2, 380, W / 2, H / 2, Math.max(W, H) * 0.63);
   vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.6)');
   ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
   const fadeIn = Math.max(0, 1 - t / 0.25), fadeOut = Math.max(0, (t - (DUR - 0.6)) / 0.6);
@@ -295,7 +350,7 @@ window.ready = (async () => {
   WALL = makeWall();
   light = document.createElement('canvas'); light.width = W / 4; light.height = H / 4; lctx = light.getContext('2d');
   lit = document.createElement('canvas'); lit.width = W; lit.height = H; litx = lit.getContext('2d');
-  SIGNS = build();
+  SIGNS = V ? buildVertical() : build();
   return true;
 })();
 window.render = render;

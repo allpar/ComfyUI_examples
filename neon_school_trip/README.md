@@ -1,6 +1,7 @@
 # 수학여행 안전 안내 — 네온사인 모션그래픽
 
-- `neon_safety.mp4` — 1920×1080, 30fps, 15초, H.264 + AAC
+- `neon_safety.mp4` — 16:9 가로, 1920×1080, 30fps, 15초, H.264 + AAC
+- `neon_safety_9x16.mp4` — 9:16 세로(쇼츠·릴스용), 1080×1920, 같은 음악·같은 비트 타이밍
 - 다크 벽돌 벽 + 핑크·청록·옐로 네온. 글자는 16분음표 박자에 맞춰 몇 번 깜빡인 뒤 정박에 켜지고, 벽에 색이 번집니다. 네온 밝기·벽 반사·카메라 줌이 킥마다 펄스합니다.
 
 ## 구성 (124 BPM, 1비트 = 0.484초)
@@ -21,7 +22,8 @@ Jua, Monoton (Google Fonts, SIL OFL 1.1) — `fonts/`
 ## 다시 렌더링
 ```
 pip install playwright
-CHROME_PATH=/path/to/chrome python3 render.py video   # -> video_noaudio.mp4
+CHROME_PATH=/path/to/chrome python3 render.py video              # 가로 -> video_noaudio.mp4
+CHROME_PATH=/path/to/chrome python3 render.py video --vertical   # 세로 -> video_v_noaudio.mp4 (index.html?v)
 ffmpeg -i video_noaudio.mp4 -ss 2.5878 -t 15 -i "Electronic L Discoed.mp3" -map 0:v -map 1:a -c:v copy \
   -af "afade=t=in:d=0.05,afade=t=out:st=13.9:d=1.1" -c:a aac -b:a 256k -shortest neon_safety.mp4
 ```
