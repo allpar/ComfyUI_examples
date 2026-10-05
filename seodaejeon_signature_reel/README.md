@@ -1,6 +1,7 @@
 # 서대전 상떼빌 시그니처 — 15초 브랜드 쇼릴
 
-`seodaejeon_signature_reel.mp4` — 1920×1080, 30fps, 15초, H.264 + AAC 320k, -13.4 LUFS
+- `seodaejeon_signature_reel.mp4` — 16:9 가로, 1920×1080, 30fps, 15초, H.264 + AAC 320k, -13.4 LUFS
+- `seodaejeon_signature_reel_9x16.mp4` — 9:16 세로(쇼츠·릴스용), 1080×1920. 음악·효과음·타이밍은 가로와 동일하고, 카메라와 레이아웃을 세로에 맞춰 다시 구성 (`reel_v.html`)
 (60fps로 렌더링한 뒤 2프레임 블렌딩으로 모션블러를 넣어 30fps로 출력)
 
 ## 구성 — 음악의 실제 타격 시점에 맞춘 편집
@@ -29,7 +30,14 @@
 ```
 ./get_assets.sh && pip install playwright opencv-contrib-python-headless librosa soundfile scipy
 python3 up.py && python3 layers.py src.png && python3 layers.py src_x2.png _x2
-HI=1 python3 render.py video 60 v60.mp4
+HI=1 python3 render.py video 60 v60.mp4            # 가로
+VERT=1 HI=1 python3 render.py video 60 v60_v.mp4   # 세로 (reel_v.html)
 python3 audio.py "freepd/Epic/Release the Hybrids.mp3"   # -> mix_pre.wav (이후 -14 LUFS로 볼륨 조정)
 ffmpeg -i v60.mp4 -i mix.wav -filter_complex "[0:v]tmix=frames=2,fps=30[v]" -map "[v]" -map 1:a ... reel.mp4
 ```
+
+## 세로 버전에서 달라진 점
+- 이미지 높이를 화면에 맞춤(z=1). 이때 타워 3개가 화면 폭을 거의 채움
+- 문구를 한 줄 대신 세 줄로 쌓음, 3분할 패널을 세로로 쌓고 좌우로 슬라이드
+- SIGNATURE는 하늘을 가로질러 흐르고, 글자 아랫부분이 타워 지붕 뒤로 숨음
+- 주요 문구는 쇼츠·릴스 UI에 가리지 않도록 화면 중앙~하단 1650px 안쪽에 배치

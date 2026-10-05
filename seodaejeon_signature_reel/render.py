@@ -6,14 +6,15 @@ async def main():
     mode = sys.argv[1]; hi = os.environ.get("HI") == "1"
     async with async_playwright() as p:
         b = await p.chromium.launch(executable_path=CHROME, args=["--allow-file-access-from-files", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"])
-        pg = await b.new_page(viewport={"width": 1920, "height": 1080})
+        VERT = os.environ.get("VERT") == "1"
+        pg = await b.new_page(viewport={"width": 1080, "height": 1920} if VERT else {"width": 1920, "height": 1080})
         pg.on("console", lambda m: print("console:", m.text)); pg.on("pageerror", lambda e: print("pageerror:", e))
-        await pg.goto((HERE / "reel.html").as_uri() + ("?hi=1" if hi else ""))
+        await pg.goto((HERE / ("reel_v.html" if VERT else "reel.html")).as_uri() + ("?hi=1" if hi else ""))
         await pg.evaluate("window.ready")
         if mode == "stills":
             for t in map(float, sys.argv[2:]):
                 d = await pg.evaluate(f"frame({t})")
-                (HERE / f"s_{t:05.2f}.png").write_bytes(base64.b64decode(d.split(",")[1]))
+                (HERE / f"s{'v' if VERT else ''}_{t:05.2f}.png").write_bytes(base64.b64decode(d.split(",")[1]))
         else:
             fps = int(sys.argv[2]); out = sys.argv[3]; n = 15 * fps
             ff = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "image2pipe", "-framerate", str(fps), "-i", "-",
